@@ -3,273 +3,288 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Immersive Fluid Wall - Bronx Children's Museum</title>
+    <title>Watercolor Bloom - Bronx Children's Museum</title>
     <style>
-        body { margin: 0; overflow: hidden; background: #000; font-family: 'Segoe UI', sans-serif; }
-        body.kiosk-mode { cursor: none !important; }
+        body { margin: 0; overflow: hidden; background: #fdfbf7; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        
+        /* The main drawing canvas */
+        #artCanvas { display: block; width: 100vw; height: 100vh; }
+        
+        /* Hidden video for tracking */
         #webcam { display: none; }
         
+        /* The Startup Overlay */
         #overlay {
             position: absolute; top: 0; left: 0; width: 100%; height: 100%;
             display: flex; flex-direction: column; justify-content: center; align-items: center;
-            background: #0a0a0a; z-index: 100; color: white; text-align: center; transition: opacity 0.8s;
+            background: rgba(253, 251, 247, 0.95); z-index: 100; color: #333; text-align: center;
+            transition: opacity 0.8s ease;
         }
-        h1 { font-size: 3rem; letter-spacing: 6px; font-weight: 200; margin-bottom: 10px; }
-        p { color: #888; font-weight: 300; margin-bottom: 40px; letter-spacing: 1px; }
+        
+        h1 { font-size: 3.5rem; letter-spacing: 2px; font-weight: 300; margin-bottom: 10px; color: #2c3e50; }
+        p { font-size: 1.2rem; color: #7f8c8d; font-weight: 300; margin-bottom: 40px; }
         
         button {
-            padding: 15px 40px; font-size: 16px; cursor: pointer; letter-spacing: 2px;
-            background: transparent; color: white; border: 1px solid rgba(255,255,255,0.3);
-            border-radius: 4px; text-transform: uppercase; transition: 0.4s;
+            padding: 18px 50px; font-size: 18px; cursor: pointer; letter-spacing: 1px;
+            background: #3498db; color: white; border: none; border-radius: 50px;
+            transition: all 0.3s ease; box-shadow: 0 4px 15px rgba(52, 152, 219, 0.3);
         }
-        button:hover { background: white; color: black; box-shadow: 0 0 30px rgba(255,255,255,0.6); }
+        button:hover { background: #2980b9; transform: translateY(-2px); box-shadow: 0 6px 20px rgba(52, 152, 219, 0.4); }
         
-        #log { margin-top: 20px; font-family: monospace; font-size: 14px; color: #aaa; max-width: 80%; line-height: 1.5; text-align: left; background: #111; padding: 15px; border-radius: 5px;}
+        #log { margin-top: 20px; font-family: monospace; font-size: 14px; color: #e74c3c; max-width: 80%; }
         
-        .dg.ac { z-index: 50 !important; transition: opacity 0.3s; }
-        body.kiosk-mode .dg.ac { opacity: 0; pointer-events: none; }
+        /* Kiosk Mode (Hides cursor) */
+        body.kiosk-mode { cursor: none; }
     </style>
-    <!-- Load Libraries -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/dat-gui/0.7.9/dat.gui.min.js"></script>
 </head>
 <body>
 
     <div id="overlay">
-        <h1>LIQUID LIGHT</h1>
-        <p>Interactive Fluid Dynamics Simulator</p>
-        <!-- The onclick is now hardcoded so it cannot fail -->
-        <button id="startBtn" onclick="startSystem()">INITIALIZE SYSTEM</button>
-        <div id="log">System standing by. Waiting for user input.</div>
+        <h1>WATERCOLOR BLOOM</h1>
+        <p>Wave your arms to paint the canvas.</p>
+        <button id="startBtn">START EXPERIENCE</button>
+        <div id="log"></div>
     </div>
 
+    <canvas id="artCanvas"></canvas>
     <video id="webcam" playsinline autoplay muted></video>
 
     <script>
-        // Move all initialization inside the button click so it doesn't crash on load
-        function startSystem() {
-            const logBox = document.getElementById('log');
-            logBox.innerHTML = "> Button clicked. Running system checks...<br>";
+        // --- SYSTEM VARIABLES ---
+        const video = document.getElementById('webcam');
+        const artCanvas = document.getElementById('artCanvas');
+        const ctx = artCanvas.getContext('2d', { alpha: false }); // alpha:false optimizes performance
+        const logBox = document.getElementById('log');
+        
+        let blooms = [];
+        let motionCanvas, mCtx, lastFrameData;
+        let isRunning = false;
 
-            // 1. Check if libraries loaded
-            if (typeof THREE === 'undefined') {
-                logBox.innerHTML += "<span style='color:#ff5555'>> CRITICAL ERROR: Three.js library was blocked from loading. Check your internet, VPN, or adblocker.</span><br>";
-                return;
+        // --- COLOR PALETTES (Soft Watercolors) ---
+        const colors = [
+            'rgba(52, 152, 219, ',  // Soft Blue
+            'rgba(46, 204, 113, ',  // Mint Green
+            'rgba(155, 89, 182, ',  // Lavender
+            'rgba(241, 196, 15, ',  // Warm Yellow
+            'rgba(230, 126, 34, ',  // Soft Orange
+            'rgba(231, 76, 60, '    // Rose Red
+        ];
+
+        // --- FULLSCREEN KIOSK MODE ('F' KEY) ---
+        document.addEventListener('keydown', (e) => {
+            if (e.key.toLowerCase() === 'f') {
+                if (!document.fullscreenElement) {
+                    document.documentElement.requestFullscreen().catch(err => console.log(err));
+                    document.body.classList.add('kiosk-mode');
+                } else {
+                    document.exitFullscreen();
+                    document.body.classList.remove('kiosk-mode');
+                }
             }
-            if (typeof dat === 'undefined') {
-                logBox.innerHTML += "<span style='color:#ff5555'>> CRITICAL ERROR: dat.GUI library was blocked from loading. Check your internet, VPN, or adblocker.</span><br>";
-                return;
-            }
+        });
 
-            logBox.innerHTML += "<span style='color:#55ff55'>> Libraries loaded successfully.</span><br>";
-
-            // 2. Check Camera API
+        // --- STARTUP LOGIC (Robust Camera Handshake) ---
+        document.getElementById('startBtn').addEventListener('click', () => {
+            logBox.innerText = "Requesting camera access...";
+            
             if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-                logBox.innerHTML += "<span style='color:#ff5555'>> CRITICAL ERROR: Camera API is blocked. You must host this on HTTPS (or localhost).</span><br>";
-                startFallbackMode();
+                logBox.innerText = "Camera API blocked. Please ensure you are on a secure (HTTPS) connection.";
                 return;
             }
 
-            logBox.innerHTML += "> Requesting camera access...<br>";
-
-            // 3. Request Camera
+            // Bare minimum request to maximize hardware compatibility
             navigator.mediaDevices.getUserMedia({ video: true })
                 .then((stream) => {
-                    logBox.innerHTML += "<span style='color:#55ff55'>> Camera access GRANTED. Starting Engine...</span><br>";
-                    const video = document.getElementById('webcam');
                     video.srcObject = stream;
                     
-                    video.play().then(() => {
-                        setTimeout(() => bootEngine(false), 500); // Boot standard mode
-                    }).catch(e => {
-                        logBox.innerHTML += `<span style='color:#ff5555'>> Autoplay blocked: ${e.message}</span><br>`;
-                        startFallbackMode();
+                    video.addEventListener('playing', () => {
+                        logBox.innerText = "";
+                        const overlay = document.getElementById('overlay');
+                        overlay.style.opacity = '0';
+                        setTimeout(() => {
+                            overlay.style.display = 'none';
+                            initCanvas();
+                        }, 800);
+                    });
+
+                    video.play().catch(e => {
+                        logBox.innerText = "Autoplay prevented. Please interact with the page.";
                     });
                 })
                 .catch((err) => {
-                    logBox.innerHTML += `<span style='color:#ff5555'>> CAMERA ERROR: ${err.name} - ${err.message}</span><br>`;
-                    startFallbackMode();
+                    logBox.innerText = `Camera Error: ${err.message}. Please check browser permissions.`;
                 });
+        });
+
+        // --- THE WATERCOLOR BLOOM CLASS ---
+        class Bloom {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                this.radius = 5; // Starts small
+                this.maxRadius = Math.random() * 150 + 100; // Grows large
+                this.growthRate = Math.random() * 2 + 1; // Spreads slowly
+                
+                // Pick a random watercolor base
+                this.colorBase = colors[Math.floor(Math.random() * colors.length)];
+                
+                this.opacity = 0.8; // Starts relatively opaque
+                this.fadeRate = 0.002; // Fades very slowly into the paper
+                this.active = true;
+            }
+
+            update() {
+                // Grow the bloom
+                if (this.radius < this.maxRadius) {
+                    this.radius += this.growthRate;
+                    this.growthRate *= 0.95; // Slows down as it gets bigger (like wet ink)
+                }
+
+                // Fade out over time
+                this.opacity -= this.fadeRate;
+                if (this.opacity <= 0.01) {
+                    this.active = false; // Mark for deletion when invisible
+                }
+            }
+
+            draw(context) {
+                if (!this.active) return;
+
+                context.beginPath();
+                
+                // Create a soft radial gradient for the watercolor effect
+                const gradient = context.createRadialGradient(
+                    this.x, this.y, 0, 
+                    this.x, this.y, this.radius
+                );
+                
+                // Center is slightly darker, edge fades out completely
+                gradient.addColorStop(0, this.colorBase + this.opacity + ')');
+                gradient.addColorStop(0.5, this.colorBase + (this.opacity * 0.5) + ')');
+                gradient.addColorStop(1, this.colorBase + '0)');
+
+                context.fillStyle = gradient;
+                context.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                context.fill();
+            }
         }
 
-        // --- THE MAIN ENGINE ---
-        let scene, camera, renderer, rtA, rtB; 
-        let simulationMaterial, displayMaterial, motionTexture, mCtx, lastFrame;
-        let frameCount = 0, mouseX = 0, mouseY = 0;
-        let isFallback = false;
+        // --- MAIN ENGINE INITIALIZATION ---
+        function initCanvas() {
+            resizeCanvas();
+            window.addEventListener('resize', resizeCanvas);
 
-        const settings = {
-            dissipation: 0.95, swirlStrength: 2.0, colorIntensity: 2.5, motionSensitivity: 20,
-            color1: '#00e5ff', color2: '#a600ff', bgBrightness: 0.05
-        };
+            // Fill canvas with "paper" color initially
+            ctx.fillStyle = '#fdfbf7';
+            ctx.fillRect(0, 0, artCanvas.width, artCanvas.height);
 
-        function startFallbackMode() {
-            const logBox = document.getElementById('log');
-            logBox.innerHTML += "<span style='color:#ffaa00'>> Booting in MOUSE FALLBACK MODE...</span><br>";
-            isFallback = true;
-            document.addEventListener('mousemove', (e) => { mouseX = e.clientX; mouseY = e.clientY; });
-            setTimeout(() => bootEngine(true), 2000);
-        }
-
-        function bootEngine(fallback) {
-            document.getElementById('overlay').style.opacity = '0';
-            setTimeout(() => { document.getElementById('overlay').style.display = 'none'; }, 800);
-
-            // Build Admin Dashboard
-            const gui = new dat.GUI({ width: 300 });
-            const fFluid = gui.addFolder('Fluid Physics');
-            fFluid.add(settings, 'dissipation', 0.80, 0.99).name('Viscosity');
-            fFluid.add(settings, 'swirlStrength', 0.0, 5.0).name('Turbulence');
-            if(!fallback) fFluid.add(settings, 'motionSensitivity', 10, 100).name('Camera Threshold');
-            
-            const fColors = gui.addFolder('Aesthetics');
-            fColors.addColor(settings, 'color1').name('Ink Color 1');
-            fColors.addColor(settings, 'color2').name('Ink Color 2');
-            fColors.add(settings, 'colorIntensity', 0.5, 5.0).name('Neon Glow');
-            fFluid.open(); fColors.open();
-
-            // WebGL Setup
-            renderer = new THREE.WebGLRenderer({ antialias: false });
-            renderer.setSize(window.innerWidth, window.innerHeight);
-            document.body.appendChild(renderer.domElement);
-
-            scene = new THREE.Scene();
-            camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-
-            const rtParams = { minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, format: THREE.RGBAFormat, type: THREE.FloatType };
-            rtA = new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight, rtParams);
-            rtB = new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight, rtParams);
-
-            const motionCanvas = document.createElement('canvas');
-            motionCanvas.width = 128; motionCanvas.height = 96;
+            // Setup Motion Tracking Canvas (Hidden)
+            motionCanvas = document.createElement('canvas');
+            motionCanvas.width = 64;  // Low resolution for fast processing
+            motionCanvas.height = 48;
             mCtx = motionCanvas.getContext('2d', { willReadFrequently: true });
-            motionTexture = new THREE.CanvasTexture(motionCanvas);
-            motionTexture.minFilter = THREE.LinearFilter;
 
-            simulationMaterial = new THREE.ShaderMaterial({
-                uniforms: {
-                    u_time: { value: 0 }, u_buffer: { value: null }, u_motion: { value: motionTexture },
-                    u_dissipation: { value: settings.dissipation }, u_swirl: { value: settings.swirlStrength },
-                    u_color1: { value: new THREE.Color(settings.color1) }, u_color2: { value: new THREE.Color(settings.color2) },
-                    u_intensity: { value: settings.colorIntensity }
-                },
-                vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position, 1.0); }`,
-                fragmentShader: `
-                    uniform float u_time; uniform sampler2D u_buffer; uniform sampler2D u_motion;
-                    uniform float u_dissipation; uniform float u_swirl;
-                    uniform vec3 u_color1; uniform vec3 u_color2; uniform float u_intensity;
-                    varying vec2 vUv;
-
-                    vec3 permute(vec3 x) { return mod(((x*34.0)+1.0)*x, 289.0); }
-                    float snoise(vec2 v) {
-                        const vec4 C = vec4(0.211324865405187, 0.366025403784439, -0.577350269189626, 0.024390243902439);
-                        vec2 i  = floor(v + dot(v, C.yy) ); vec2 x0 = v - i + dot(i, C.xx);
-                        vec2 i1 = (x0.x > x0.y) ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
-                        vec4 x12 = x0.xyxy + C.xxzz; x12.xy -= i1; i = mod(i, 289.0);
-                        vec3 p = permute( permute( i.y + vec3(0.0, i1.y, 1.0 )) + i.x + vec3(0.0, i1.x, 1.0 ));
-                        vec3 m = max(0.5 - vec3(dot(x0,x0), dot(x12.xy,x12.xy), dot(x12.zw,x12.zw)), 0.0);
-                        m = m*m ; m = m*m ; vec3 x = 2.0 * fract(p * C.www) - 1.0;
-                        vec3 h = abs(x) - 0.5; vec3 ox = floor(x + 0.5); vec3 a0 = x - ox;
-                        m *= 1.79284291400159 - 0.85373472095314 * ( a0*a0 + h*h );
-                        vec3 g; g.x  = a0.x  * x0.x  + h.x  * x0.y; g.yz = a0.yz * x12.xz + h.yz * x12.yw;
-                        return 130.0 * dot(m, g);
-                    }
-
-                    void main() {
-                        float n1 = snoise(vUv * 4.0 + u_time * 0.3);
-                        float n2 = snoise(vUv * 4.0 - u_time * 0.3 + 20.0);
-                        vec2 flow = vec2(n1, n2) * (u_swirl * 0.003);
-                        
-                        vec2 mirrorUv = vec2(1.0 - vUv.x, vUv.y);
-                        vec4 motion = texture2D(u_motion, mirrorUv);
-                        
-                        vec4 prevColor = texture2D(u_buffer, vUv - flow + (motion.xy - 0.5) * 0.005);
-                        vec3 injectColor = mix(u_color1, u_color2, sin(u_time + vUv.y * 5.0) * 0.5 + 0.5);
-                        
-                        gl_FragColor = prevColor * u_dissipation + vec4(injectColor * motion.r * u_intensity, 1.0);
-                    }
-                `
-            });
-
-            displayMaterial = new THREE.ShaderMaterial({
-                uniforms: { u_texture: { value: null } },
-                vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position, 1.0); }`,
-                fragmentShader: `uniform sampler2D u_texture; varying vec2 vUv; void main() { gl_FragColor = vec4(texture2D(u_texture, vUv).rgb, 1.0); }`
-            });
-
-            scene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), simulationMaterial));
-            
-            updateMotionInput();
+            isRunning = true;
+            trackMotion();
             animate();
         }
 
-        function updateMotionInput() {
-            mCtx.fillStyle = 'rgba(0, 0, 0, 0.15)'; mCtx.fillRect(0, 0, 128, 96);
-            const video = document.getElementById('webcam');
+        function resizeCanvas() {
+            artCanvas.width = window.innerWidth;
+            artCanvas.height = window.innerHeight;
+            // Re-fill paper color on resize so it doesn't turn black
+            if(ctx) {
+                ctx.fillStyle = '#fdfbf7';
+                ctx.fillRect(0, 0, artCanvas.width, artCanvas.height);
+            }
+        }
 
-            if (isFallback) {
-                drawGlowingBlob((1.0 - (mouseX / window.innerWidth)) * 128, (mouseY / window.innerHeight) * 96);
-            } else if (video.readyState === video.HAVE_ENOUGH_DATA) {
-                mCtx.drawImage(video, 0, 0, 128, 96);
-                const curr = mCtx.getImageData(0, 0, 128, 96);
-                if (lastFrame) {
-                    for (let i = 0; i < curr.data.length; i += 4) {
-                        if (Math.abs(curr.data[i] - lastFrame.data[i]) > settings.motionSensitivity) {
-                            drawGlowingBlob((i / 4) % 128, Math.floor((i / 4) / 128));
+        // --- MOTION TRACKING LOGIC ---
+        function trackMotion() {
+            if (!isRunning) return;
+
+            if (video.readyState === video.HAVE_ENOUGH_DATA) {
+                // Draw current webcam frame to the tiny hidden canvas
+                mCtx.drawImage(video, 0, 0, motionCanvas.width, motionCanvas.height);
+                const currentFrameData = mCtx.getImageData(0, 0, motionCanvas.width, motionCanvas.height);
+
+                if (lastFrameData) {
+                    // Look for significant movement
+                    let motionDetected = false;
+                    let motionX = 0;
+                    let motionY = 0;
+                    let pixelCount = 0;
+
+                    // Step by 4 to check RGB/A values
+                    for (let i = 0; i < currentFrameData.data.length; i += 16) { // Skip pixels for speed
+                        const rDiff = Math.abs(currentFrameData.data[i] - lastFrameData.data[i]);
+                        
+                        // Threshold for movement (lower = more sensitive)
+                        if (rDiff > 40) { 
+                            const pixelIndex = i / 4;
+                            const x = pixelIndex % motionCanvas.width;
+                            const y = Math.floor(pixelIndex / motionCanvas.width);
+                            
+                            motionX += x;
+                            motionY += y;
+                            pixelCount++;
+                            motionDetected = true;
+                        }
+                    }
+
+                    // If a "chunk" of movement happened, spawn a bloom
+                    // Requires at least 5 changed pixels to avoid noise/flicker creating paints
+                    if (motionDetected && pixelCount > 5) {
+                        // Average the position of the movement
+                        const avgX = motionX / pixelCount;
+                        const avgY = motionY / pixelCount;
+
+                        // Map the tiny 64x48 coordinate to the massive screen coordinate
+                        // IMPORTANT: We mirror the X axis so it acts like a mirror
+                        const mappedX = (1.0 - (avgX / motionCanvas.width)) * artCanvas.width;
+                        const mappedY = (avgY / motionCanvas.height) * artCanvas.height;
+
+                        // Throttle bloom creation so it doesn't flood the screen instantly
+                        if (Math.random() > 0.7) { 
+                            blooms.push(new Bloom(mappedX, mappedY));
                         }
                     }
                 }
-                lastFrame = curr;
+                lastFrameData = currentFrameData;
             }
-            motionTexture.needsUpdate = true;
-            requestAnimationFrame(updateMotionInput);
+
+            // Run tracking 15 times a second (saves CPU, keeps movement deliberate)
+            setTimeout(trackMotion, 1000 / 15); 
         }
 
-        function drawGlowingBlob(x, y) {
-            mCtx.beginPath();
-            const grad = mCtx.createRadialGradient(x, y, 0, x, y, 4);
-            grad.addColorStop(0, 'rgba(255,255,255, 0.8)'); grad.addColorStop(1, 'rgba(255,255,255, 0)');
-            mCtx.fillStyle = grad; mCtx.arc(x, y, 4, 0, Math.PI * 2); mCtx.fill();
-        }
-
+        // --- ANIMATION RENDER LOOP ---
         function animate() {
+            if (!isRunning) return;
             requestAnimationFrame(animate);
-            frameCount++;
 
-            simulationMaterial.uniforms.u_time.value = frameCount * 0.05;
-            simulationMaterial.uniforms.u_dissipation.value = settings.dissipation;
-            simulationMaterial.uniforms.u_swirl.value = settings.swirlStrength;
-            simulationMaterial.uniforms.u_intensity.value = settings.colorIntensity;
-            simulationMaterial.uniforms.u_color1.value.set(settings.color1);
-            simulationMaterial.uniforms.u_color2.value.set(settings.color2);
+            // 1. Slowly fade the entire canvas back to the "paper" color
+            // This prevents the screen from turning into a muddy brown mess over time
+            ctx.fillStyle = 'rgba(253, 251, 247, 0.02)'; // Very transparent white
+            ctx.fillRect(0, 0, artCanvas.width, artCanvas.height);
 
-            simulationMaterial.uniforms.u_buffer.value = rtA.texture;
-            scene.overrideMaterial = simulationMaterial;
-            renderer.setRenderTarget(rtB);
-            renderer.render(scene, camera);
-
-            let temp = rtA; rtA = rtB; rtB = temp;
-
-            displayMaterial.uniforms.u_texture.value = rtA.texture;
-            scene.overrideMaterial = displayMaterial;
-            renderer.setRenderTarget(null);
-            renderer.render(scene, camera);
+            // 2. Update and draw all active blooms
+            // We use globalCompositeOperation to make colors multiply/darken like real ink
+            ctx.globalCompositeOperation = 'multiply';
+            
+            for (let i = blooms.length - 1; i >= 0; i--) {
+                let b = blooms[i];
+                b.update();
+                b.draw(ctx);
+                
+                // Remove dead blooms from array to save memory
+                if (!b.active) {
+                    blooms.splice(i, 1);
+                }
+            }
+            
+            // Reset composite operation so the fading background works correctly next frame
+            ctx.globalCompositeOperation = 'source-over';
         }
-
-        document.addEventListener('keydown', (e) => {
-            if (e.key.toLowerCase() === 'f') {
-                if (!document.fullscreenElement) { document.documentElement.requestFullscreen(); document.body.classList.add('kiosk-mode'); }
-                else { document.exitFullscreen(); document.body.classList.remove('kiosk-mode'); }
-            }
-        });
-
-        window.addEventListener('resize', () => {
-            if (renderer) {
-                renderer.setSize(window.innerWidth, window.innerHeight);
-                rtA.setSize(window.innerWidth, window.innerHeight);
-                rtB.setSize(window.innerWidth, window.innerHeight);
-            }
-        });
     </script>
 </body>
 </html>
