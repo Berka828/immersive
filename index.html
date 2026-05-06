@@ -38,13 +38,13 @@
 
     <div id="overlay">
         <h1>LIQUID LIGHT</h1>
-        <p>Interactive Fluid Dynamics Simulation</p>
+        <p>Interactive Fluid Dynamics</p>
         <button id="startBtn">INITIALIZE SYSTEM</button>
         <div id="log">System standing by. Click to begin camera handshake.</div>
     </div>
 
     <!-- Hidden video element -->
-    <video id="webcam" playsinline autoplay muted width="320" height="240"></video>
+    <video id="webcam" playsinline autoplay muted></video>
 
     <script>
         // --- LOGGING UTILITY ---
@@ -53,7 +53,6 @@
             const colorClass = type === 'error' ? 'log-error' : type === 'success' ? 'log-success' : '';
             logBox.innerHTML += `<div class="${colorClass}">> ${msg}</div>`;
             logBox.scrollTop = logBox.scrollHeight;
-            console.log(msg);
         }
 
         // --- GLOBAL VARIABLES ---
@@ -73,8 +72,8 @@
             swirlStrength: 2.0,
             colorIntensity: 2.5,
             motionSensitivity: 20,
-            color1: '#00e5ff', // Cyan
-            color2: '#a600ff', // Magenta
+            color1: '#00e5ff', 
+            color2: '#a600ff', 
             bgBrightness: 0.05
         };
 
@@ -92,7 +91,6 @@
         
         fFluid.open(); fColors.open();
 
-        // --- FULLSCREEN KIOSK MODE ('F') ---
         document.addEventListener('keydown', (e) => {
             if (e.key.toLowerCase() === 'f') {
                 if (!document.fullscreenElement) {
@@ -105,6 +103,76 @@
             }
         });
 
-        // --- SYSTEM STARTUP (The Robust Handshake) ---
+        // --- SYSTEM STARTUP (Stripped of Constraints) ---
         document.getElementById('startBtn').addEventListener('click', () => {
-            logBox.innerHTML = ""; // Clear log
+            logBox.innerHTML = ""; 
+            sysLog("Initiating startup sequence...");
+            
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                sysLog("CRITICAL ERROR: Camera API not supported. Are you on HTTPS?", 'error');
+                startFallbackMode();
+                return;
+            }
+
+            sysLog("Requesting basic hardware access...");
+            
+            // THE FIX: Bare minimum request, exactly like the diagnostic
+            navigator.mediaDevices.getUserMedia({ video: true })
+                .then((stream) => {
+                    sysLog("Hardware access granted. Attaching stream...", 'success');
+                    video.srcObject = stream;
+                    
+                    video.addEventListener('playing', () => {
+                        sysLog("Video stream active. Booting WebGL Engine...", 'success');
+                        setTimeout(() => {
+                            document.getElementById('overlay').style.opacity = '0';
+                            setTimeout(() => {
+                                document.getElementById('overlay').style.display = 'none';
+                                initWebGL();
+                            }, 800);
+                        }, 500); 
+                    });
+
+                    video.play().catch(e => {
+                        sysLog("Autoplay prevented by browser: " + e.message, 'error');
+                        startFallbackMode();
+                    });
+
+                })
+                .catch((err) => {
+                    sysLog(`CAMERA FAILED: ${err.name} - ${err.message}`, 'error');
+                    startFallbackMode();
+                });
+        });
+
+        function startFallbackMode() {
+            sysLog("Starting FALLBACK MODE (Mouse Interaction Only)", 'error');
+            fallbackMouseActive = true;
+            
+            document.addEventListener('mousemove', (e) => {
+                mouseX = e.clientX;
+                mouseY = e.clientY;
+            });
+            
+            setTimeout(() => {
+                document.getElementById('overlay').style.opacity = '0';
+                setTimeout(() => {
+                    document.getElementById('overlay').style.display = 'none';
+                    initWebGL();
+                }, 800);
+            }, 2000);
+        }
+
+        // --- WEBGL FLUID ENGINE ---
+        function initWebGL() {
+            renderer = new THREE.WebGLRenderer({ antialias: false });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.body.appendChild(renderer.domElement);
+
+            scene = new THREE.Scene();
+            camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+
+            const rtParams = { 
+                minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, 
+                format: THREE.RGBAFormat, type: THREE.FloatType 
+            };
