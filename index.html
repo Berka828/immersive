@@ -24,13 +24,12 @@
         }
         button:hover { background: white; color: black; box-shadow: 0 0 30px rgba(255,255,255,0.6); }
         
-        #log { margin-top: 20px; font-family: monospace; font-size: 12px; color: #555; max-width: 80%; line-height: 1.5; text-align: left; background: #111; padding: 15px; border-radius: 5px;}
-        .log-error { color: #ff5555; }
-        .log-success { color: #55ff55; }
+        #log { margin-top: 20px; font-family: monospace; font-size: 14px; color: #aaa; max-width: 80%; line-height: 1.5; text-align: left; background: #111; padding: 15px; border-radius: 5px;}
         
         .dg.ac { z-index: 50 !important; transition: opacity 0.3s; }
         body.kiosk-mode .dg.ac { opacity: 0; pointer-events: none; }
     </style>
+    <!-- Load Libraries -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/dat-gui/0.7.9/dat.gui.min.js"></script>
 </head>
@@ -38,133 +37,98 @@
 
     <div id="overlay">
         <h1>LIQUID LIGHT</h1>
-        <p>Interactive Fluid Dynamics</p>
-        <button id="startBtn">INITIALIZE SYSTEM</button>
-        <div id="log">System standing by. Click to begin camera handshake.</div>
+        <p>Interactive Fluid Dynamics Simulator</p>
+        <!-- The onclick is now hardcoded so it cannot fail -->
+        <button id="startBtn" onclick="startSystem()">INITIALIZE SYSTEM</button>
+        <div id="log">System standing by. Waiting for user input.</div>
     </div>
 
-    <!-- Hidden video element -->
     <video id="webcam" playsinline autoplay muted></video>
 
     <script>
-        // --- LOGGING UTILITY ---
-        const logBox = document.getElementById('log');
-        function sysLog(msg, type = 'normal') {
-            const colorClass = type === 'error' ? 'log-error' : type === 'success' ? 'log-success' : '';
-            logBox.innerHTML += `<div class="${colorClass}">> ${msg}</div>`;
-            logBox.scrollTop = logBox.scrollHeight;
-        }
+        // Move all initialization inside the button click so it doesn't crash on load
+        function startSystem() {
+            const logBox = document.getElementById('log');
+            logBox.innerHTML = "> Button clicked. Running system checks...<br>";
 
-        // --- GLOBAL VARIABLES ---
-        const video = document.getElementById('webcam');
-        let scene, camera, renderer;
-        let rtA, rtB; 
-        let simulationMaterial, displayMaterial;
-        let motionCanvas, mCtx, motionTexture;
-        let lastFrame;
-        let frameCount = 0;
-        let fallbackMouseActive = false;
-        let mouseX = 0, mouseY = 0;
-
-        // --- ADMIN SETTINGS ---
-        const settings = {
-            dissipation: 0.95,
-            swirlStrength: 2.0,
-            colorIntensity: 2.5,
-            motionSensitivity: 20,
-            color1: '#00e5ff', 
-            color2: '#a600ff', 
-            bgBrightness: 0.05
-        };
-
-        // --- SETUP ADMIN DASHBOARD ---
-        const gui = new dat.GUI({ width: 300 });
-        const fFluid = gui.addFolder('Fluid Physics');
-        fFluid.add(settings, 'dissipation', 0.80, 0.99).name('Fade Speed (Viscosity)');
-        fFluid.add(settings, 'swirlStrength', 0.0, 5.0).name('Turbulence');
-        fFluid.add(settings, 'motionSensitivity', 10, 100).name('Camera Threshold');
-        
-        const fColors = gui.addFolder('Aesthetics');
-        fColors.addColor(settings, 'color1').name('Ink Color 1');
-        fColors.addColor(settings, 'color2').name('Ink Color 2');
-        fColors.add(settings, 'colorIntensity', 0.5, 5.0).name('Neon Glow');
-        
-        fFluid.open(); fColors.open();
-
-        document.addEventListener('keydown', (e) => {
-            if (e.key.toLowerCase() === 'f') {
-                if (!document.fullscreenElement) {
-                    document.documentElement.requestFullscreen();
-                    document.body.classList.add('kiosk-mode');
-                } else {
-                    document.exitFullscreen();
-                    document.body.classList.remove('kiosk-mode');
-                }
+            // 1. Check if libraries loaded
+            if (typeof THREE === 'undefined') {
+                logBox.innerHTML += "<span style='color:#ff5555'>> CRITICAL ERROR: Three.js library was blocked from loading. Check your internet, VPN, or adblocker.</span><br>";
+                return;
             }
-        });
+            if (typeof dat === 'undefined') {
+                logBox.innerHTML += "<span style='color:#ff5555'>> CRITICAL ERROR: dat.GUI library was blocked from loading. Check your internet, VPN, or adblocker.</span><br>";
+                return;
+            }
 
-        // --- SYSTEM STARTUP (Stripped of Constraints) ---
-        document.getElementById('startBtn').addEventListener('click', () => {
-            logBox.innerHTML = ""; 
-            sysLog("Initiating startup sequence...");
-            
+            logBox.innerHTML += "<span style='color:#55ff55'>> Libraries loaded successfully.</span><br>";
+
+            // 2. Check Camera API
             if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-                sysLog("CRITICAL ERROR: Camera API not supported. Are you on HTTPS?", 'error');
+                logBox.innerHTML += "<span style='color:#ff5555'>> CRITICAL ERROR: Camera API is blocked. You must host this on HTTPS (or localhost).</span><br>";
                 startFallbackMode();
                 return;
             }
 
-            sysLog("Requesting basic hardware access...");
-            
-            // THE FIX: Bare minimum request, exactly like the diagnostic
+            logBox.innerHTML += "> Requesting camera access...<br>";
+
+            // 3. Request Camera
             navigator.mediaDevices.getUserMedia({ video: true })
                 .then((stream) => {
-                    sysLog("Hardware access granted. Attaching stream...", 'success');
+                    logBox.innerHTML += "<span style='color:#55ff55'>> Camera access GRANTED. Starting Engine...</span><br>";
+                    const video = document.getElementById('webcam');
                     video.srcObject = stream;
                     
-                    video.addEventListener('playing', () => {
-                        sysLog("Video stream active. Booting WebGL Engine...", 'success');
-                        setTimeout(() => {
-                            document.getElementById('overlay').style.opacity = '0';
-                            setTimeout(() => {
-                                document.getElementById('overlay').style.display = 'none';
-                                initWebGL();
-                            }, 800);
-                        }, 500); 
-                    });
-
-                    video.play().catch(e => {
-                        sysLog("Autoplay prevented by browser: " + e.message, 'error');
+                    video.play().then(() => {
+                        setTimeout(() => bootEngine(false), 500); // Boot standard mode
+                    }).catch(e => {
+                        logBox.innerHTML += `<span style='color:#ff5555'>> Autoplay blocked: ${e.message}</span><br>`;
                         startFallbackMode();
                     });
-
                 })
                 .catch((err) => {
-                    sysLog(`CAMERA FAILED: ${err.name} - ${err.message}`, 'error');
+                    logBox.innerHTML += `<span style='color:#ff5555'>> CAMERA ERROR: ${err.name} - ${err.message}</span><br>`;
                     startFallbackMode();
                 });
-        });
-
-        function startFallbackMode() {
-            sysLog("Starting FALLBACK MODE (Mouse Interaction Only)", 'error');
-            fallbackMouseActive = true;
-            
-            document.addEventListener('mousemove', (e) => {
-                mouseX = e.clientX;
-                mouseY = e.clientY;
-            });
-            
-            setTimeout(() => {
-                document.getElementById('overlay').style.opacity = '0';
-                setTimeout(() => {
-                    document.getElementById('overlay').style.display = 'none';
-                    initWebGL();
-                }, 800);
-            }, 2000);
         }
 
-        // --- WEBGL FLUID ENGINE ---
-        function initWebGL() {
+        // --- THE MAIN ENGINE ---
+        let scene, camera, renderer, rtA, rtB; 
+        let simulationMaterial, displayMaterial, motionTexture, mCtx, lastFrame;
+        let frameCount = 0, mouseX = 0, mouseY = 0;
+        let isFallback = false;
+
+        const settings = {
+            dissipation: 0.95, swirlStrength: 2.0, colorIntensity: 2.5, motionSensitivity: 20,
+            color1: '#00e5ff', color2: '#a600ff', bgBrightness: 0.05
+        };
+
+        function startFallbackMode() {
+            const logBox = document.getElementById('log');
+            logBox.innerHTML += "<span style='color:#ffaa00'>> Booting in MOUSE FALLBACK MODE...</span><br>";
+            isFallback = true;
+            document.addEventListener('mousemove', (e) => { mouseX = e.clientX; mouseY = e.clientY; });
+            setTimeout(() => bootEngine(true), 2000);
+        }
+
+        function bootEngine(fallback) {
+            document.getElementById('overlay').style.opacity = '0';
+            setTimeout(() => { document.getElementById('overlay').style.display = 'none'; }, 800);
+
+            // Build Admin Dashboard
+            const gui = new dat.GUI({ width: 300 });
+            const fFluid = gui.addFolder('Fluid Physics');
+            fFluid.add(settings, 'dissipation', 0.80, 0.99).name('Viscosity');
+            fFluid.add(settings, 'swirlStrength', 0.0, 5.0).name('Turbulence');
+            if(!fallback) fFluid.add(settings, 'motionSensitivity', 10, 100).name('Camera Threshold');
+            
+            const fColors = gui.addFolder('Aesthetics');
+            fColors.addColor(settings, 'color1').name('Ink Color 1');
+            fColors.addColor(settings, 'color2').name('Ink Color 2');
+            fColors.add(settings, 'colorIntensity', 0.5, 5.0).name('Neon Glow');
+            fFluid.open(); fColors.open();
+
+            // WebGL Setup
             renderer = new THREE.WebGLRenderer({ antialias: false });
             renderer.setSize(window.innerWidth, window.innerHeight);
             document.body.appendChild(renderer.domElement);
@@ -172,7 +136,140 @@
             scene = new THREE.Scene();
             camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 
-            const rtParams = { 
-                minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, 
-                format: THREE.RGBAFormat, type: THREE.FloatType 
-            };
+            const rtParams = { minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, format: THREE.RGBAFormat, type: THREE.FloatType };
+            rtA = new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight, rtParams);
+            rtB = new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight, rtParams);
+
+            const motionCanvas = document.createElement('canvas');
+            motionCanvas.width = 128; motionCanvas.height = 96;
+            mCtx = motionCanvas.getContext('2d', { willReadFrequently: true });
+            motionTexture = new THREE.CanvasTexture(motionCanvas);
+            motionTexture.minFilter = THREE.LinearFilter;
+
+            simulationMaterial = new THREE.ShaderMaterial({
+                uniforms: {
+                    u_time: { value: 0 }, u_buffer: { value: null }, u_motion: { value: motionTexture },
+                    u_dissipation: { value: settings.dissipation }, u_swirl: { value: settings.swirlStrength },
+                    u_color1: { value: new THREE.Color(settings.color1) }, u_color2: { value: new THREE.Color(settings.color2) },
+                    u_intensity: { value: settings.colorIntensity }
+                },
+                vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position, 1.0); }`,
+                fragmentShader: `
+                    uniform float u_time; uniform sampler2D u_buffer; uniform sampler2D u_motion;
+                    uniform float u_dissipation; uniform float u_swirl;
+                    uniform vec3 u_color1; uniform vec3 u_color2; uniform float u_intensity;
+                    varying vec2 vUv;
+
+                    vec3 permute(vec3 x) { return mod(((x*34.0)+1.0)*x, 289.0); }
+                    float snoise(vec2 v) {
+                        const vec4 C = vec4(0.211324865405187, 0.366025403784439, -0.577350269189626, 0.024390243902439);
+                        vec2 i  = floor(v + dot(v, C.yy) ); vec2 x0 = v - i + dot(i, C.xx);
+                        vec2 i1 = (x0.x > x0.y) ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
+                        vec4 x12 = x0.xyxy + C.xxzz; x12.xy -= i1; i = mod(i, 289.0);
+                        vec3 p = permute( permute( i.y + vec3(0.0, i1.y, 1.0 )) + i.x + vec3(0.0, i1.x, 1.0 ));
+                        vec3 m = max(0.5 - vec3(dot(x0,x0), dot(x12.xy,x12.xy), dot(x12.zw,x12.zw)), 0.0);
+                        m = m*m ; m = m*m ; vec3 x = 2.0 * fract(p * C.www) - 1.0;
+                        vec3 h = abs(x) - 0.5; vec3 ox = floor(x + 0.5); vec3 a0 = x - ox;
+                        m *= 1.79284291400159 - 0.85373472095314 * ( a0*a0 + h*h );
+                        vec3 g; g.x  = a0.x  * x0.x  + h.x  * x0.y; g.yz = a0.yz * x12.xz + h.yz * x12.yw;
+                        return 130.0 * dot(m, g);
+                    }
+
+                    void main() {
+                        float n1 = snoise(vUv * 4.0 + u_time * 0.3);
+                        float n2 = snoise(vUv * 4.0 - u_time * 0.3 + 20.0);
+                        vec2 flow = vec2(n1, n2) * (u_swirl * 0.003);
+                        
+                        vec2 mirrorUv = vec2(1.0 - vUv.x, vUv.y);
+                        vec4 motion = texture2D(u_motion, mirrorUv);
+                        
+                        vec4 prevColor = texture2D(u_buffer, vUv - flow + (motion.xy - 0.5) * 0.005);
+                        vec3 injectColor = mix(u_color1, u_color2, sin(u_time + vUv.y * 5.0) * 0.5 + 0.5);
+                        
+                        gl_FragColor = prevColor * u_dissipation + vec4(injectColor * motion.r * u_intensity, 1.0);
+                    }
+                `
+            });
+
+            displayMaterial = new THREE.ShaderMaterial({
+                uniforms: { u_texture: { value: null } },
+                vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position, 1.0); }`,
+                fragmentShader: `uniform sampler2D u_texture; varying vec2 vUv; void main() { gl_FragColor = vec4(texture2D(u_texture, vUv).rgb, 1.0); }`
+            });
+
+            scene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), simulationMaterial));
+            
+            updateMotionInput();
+            animate();
+        }
+
+        function updateMotionInput() {
+            mCtx.fillStyle = 'rgba(0, 0, 0, 0.15)'; mCtx.fillRect(0, 0, 128, 96);
+            const video = document.getElementById('webcam');
+
+            if (isFallback) {
+                drawGlowingBlob((1.0 - (mouseX / window.innerWidth)) * 128, (mouseY / window.innerHeight) * 96);
+            } else if (video.readyState === video.HAVE_ENOUGH_DATA) {
+                mCtx.drawImage(video, 0, 0, 128, 96);
+                const curr = mCtx.getImageData(0, 0, 128, 96);
+                if (lastFrame) {
+                    for (let i = 0; i < curr.data.length; i += 4) {
+                        if (Math.abs(curr.data[i] - lastFrame.data[i]) > settings.motionSensitivity) {
+                            drawGlowingBlob((i / 4) % 128, Math.floor((i / 4) / 128));
+                        }
+                    }
+                }
+                lastFrame = curr;
+            }
+            motionTexture.needsUpdate = true;
+            requestAnimationFrame(updateMotionInput);
+        }
+
+        function drawGlowingBlob(x, y) {
+            mCtx.beginPath();
+            const grad = mCtx.createRadialGradient(x, y, 0, x, y, 4);
+            grad.addColorStop(0, 'rgba(255,255,255, 0.8)'); grad.addColorStop(1, 'rgba(255,255,255, 0)');
+            mCtx.fillStyle = grad; mCtx.arc(x, y, 4, 0, Math.PI * 2); mCtx.fill();
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            frameCount++;
+
+            simulationMaterial.uniforms.u_time.value = frameCount * 0.05;
+            simulationMaterial.uniforms.u_dissipation.value = settings.dissipation;
+            simulationMaterial.uniforms.u_swirl.value = settings.swirlStrength;
+            simulationMaterial.uniforms.u_intensity.value = settings.colorIntensity;
+            simulationMaterial.uniforms.u_color1.value.set(settings.color1);
+            simulationMaterial.uniforms.u_color2.value.set(settings.color2);
+
+            simulationMaterial.uniforms.u_buffer.value = rtA.texture;
+            scene.overrideMaterial = simulationMaterial;
+            renderer.setRenderTarget(rtB);
+            renderer.render(scene, camera);
+
+            let temp = rtA; rtA = rtB; rtB = temp;
+
+            displayMaterial.uniforms.u_texture.value = rtA.texture;
+            scene.overrideMaterial = displayMaterial;
+            renderer.setRenderTarget(null);
+            renderer.render(scene, camera);
+        }
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key.toLowerCase() === 'f') {
+                if (!document.fullscreenElement) { document.documentElement.requestFullscreen(); document.body.classList.add('kiosk-mode'); }
+                else { document.exitFullscreen(); document.body.classList.remove('kiosk-mode'); }
+            }
+        });
+
+        window.addEventListener('resize', () => {
+            if (renderer) {
+                renderer.setSize(window.innerWidth, window.innerHeight);
+                rtA.setSize(window.innerWidth, window.innerHeight);
+                rtB.setSize(window.innerWidth, window.innerHeight);
+            }
+        });
+    </script>
+</body>
+</html>
