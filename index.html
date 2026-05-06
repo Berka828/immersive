@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Immersive Fluid Wall - Pro Installation</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; font-family: 'Segoe UI', sans-serif; cursor: default; }
+        body.kiosk-mode { cursor: none !important; }
+        #webcam { display: none; }
+        
+        #overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+            background: #050505; z-index: 100; color: white; text-align: center; transition: opacity 0.8s;
+        }
+        h1 { font-size: 3rem; letter-spacing: 6px; font-weight: 200; margin-bottom: 10px; }
+        p { color: #888; font-weight: 300; margin-bottom: 40px; letter-spacing: 1px; }
+        
+        button {
+            padding: 15px 40px; font-size: 16px; cursor: pointer; letter-spacing: 2px;
+            background: transparent; color: white; border: 1px solid rgba(255,255,255,0.3);
+            border-radius: 4px; text-transform: uppercase; transition: 0.4s;
+        }
+        button:hover { background: white; color: black; box-shadow: 0 0 30px rgba(255,255,255,0.6); }
+        #status { margin-top: 20px; color: #555; font-size: 14px; }
+        
+        .dg.ac { z-index: 50 !important; transition: opacity 0.3s; }
+        body.kiosk-mode .dg.ac { opacity: 0; pointer-events: none; }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/dat-gui/0.7.9/dat.gui.min.js"></script>
+</head>
+<body>
+
+    <div id="overlay">
+        <h1>IMMERSIVE FLUID</h1>
+        <p>Interactive Liquid Light Simulator</p>
+        <button id="startBtn">Initialize Projection</button>
+        <div id="status">Awaiting Initialization</div>
+    </div>
+
+    <video id="webcam" playsinline autoplay muted></video>
+
+    <script>
+        // --- ADMIN SETTINGS ---
+        const settings = {
+            dissipation: 0.96,     // How fast the smoke fades (0.90 to 0.99)
+            swirlStrength: 2.5,    // How much it curls and twists
+            colorIntensity: 3.0,   // Brightness of the colors
+            motionSensitivity: 25, // How easily it detects kids
+            color1: '#00ffff',     // Primary dye color
+            color2: '#ff00ff',     // Secondary dye color
+            bgBrightness: 0.05     // Background ambient glow
+        };
+
+        const video = document.getElementById('webcam');
+        let scene, camera, renderer;
+        let rtA, rtB; // Render Targets for the feedback loop
+        let simulationMaterial, displayMaterial;
+        let motionCanvas, mCtx, motionTexture;
+        let lastFrame;
+        let frameCount = 0;
+
+        // --- ADMIN DASHBOARD ---
+        const gui = new dat.GUI({ width: 320 });
+        const fFluid = gui.addFolder('Fluid Dynamics');
+        fFluid.add(settings, 'dissipation', 0.85, 0.995).name('Fade Speed');
+        fFluid.add(settings, 'swirlStrength', 0.0, 5.0).name('Swirl (Viscosity)');
+        fFluid.add(settings, 'motionSensitivity', 10, 100).name('Motion Threshold');
+        
+        const fColors = gui.addFolder('Aesthetics');
+        fColors.addColor(settings, 'color1').name('Ink Color A');
+        fColors.addColor(settings, 'color2').name('Ink Color B');
+        fColors.add(settings, 'colorIntensity', 0.5, 5.0).name('Neon Glow');
+        fColors.add(settings, 'bgBrightness', 0.0, 0.5).name('Ambient Light');
+        
+        fFluid.open(); fColors.open();
+
+        // --- FULLSCREEN KIOSK MODE ('F') ---
+        document.addEventListener('keydown', (e) => {
+            if (e.key.toLowerCase() === 'f') {
+                if (!document.fullscreenElement) {
+                    document.documentElement.requestFullscreen().catch(e => console.log(e));
+                    document.body.classList.add('kiosk-mode');
+                } else {
+                    document.exitFullscreen();
+                    document.body.classList.remove('kiosk-mode');
+                }
+            }
+        });
+
+        // --- INITIALIZATION ---
+        document.getElementById('startBtn').addEventListener('click', async () => {
+            const status = document.getElementById('status');
+            status.innerText = "Accessing Depth/Optical Sensors...";
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 320, height: 240 } });
+                video.srcObject = stream;
+                await video.play();
+                
+                document.getElementById('overlay').style.opacity = '0';
+                setTimeout(() => document.getElementById('overlay').style.display = 'none', 800);
+                
+                initWebGL();
+            } catch (err) {
+                status.innerText = "Error: " + err.message;
+                status.style.color = "#ff4444";
+            }
+        });
+
+        function initWebGL() {
+            renderer = new THREE.WebGLRenderer({ antialias: false });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.body.appendChild(renderer.domElement);
+
+            scene = new THREE.Scene();
+            camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+
+            // Setup Render Targets for Feedback Loop (Ping-Pong)
+            const rtParams = { 
+                minFilter: THREE.LinearFilter, 
+                magFilter: THREE.LinearFilter, 
+                format: THREE.RGBAFormat,
+                type: THREE.FloatType // Float allows high-dynamic range mixing without banding
+            };
+            rtA = new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight, rtParams);
+            rtB = new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight, rtParams);
+
+            // Motion Capture Texture
+            motionCanvas = document.createElement('canvas');
+            motionCanvas.width = 128; motionCanvas.height = 96;
+            mCtx = motionCanvas.getContext('2d');
+            motionTexture = new THREE.CanvasTexture(motionCanvas);
+            motionTexture.minFilter = THREE.LinearFilter;
+
+            // --- THE FLUID FEEDBACK SHADER ---
+            simulationMaterial = new THREE.ShaderMaterial({
+                uniforms: {
+                    u_time: { value: 0 },
+                    u_buffer: { value: null }, // Previous frame
+                    u_motion: { value: motionTexture }, // Webcam motion map
+                    u_dissipation: { value: settings.dissipation },
+                    u_swirl: { value: settings.swirlStrength },
+                    u_color1: { value: new THREE.Color(settings.color1) },
+                    u_color2: { value: new THREE.Color(settings.color2) },
+                    u_intensity: { value: settings.colorIntensity }
+                },
+                vertexShader: `
+                    varying vec2 vUv;
+                    void main() {
+                        vUv = uv;
+                        gl_Position = vec4(position, 1.0);
+                    }
+                `,
+                fragmentShader: `
+                    uniform float u_time;
+                    uniform sampler2D u_buffer;
+                    uniform sampler2D u_motion;
+                    uniform float u_dissipation;
+                    uniform float u_swirl;
+                    
+                    uniform vec3 u_color1;
+                    uniform vec3 u_color2;
+                    uniform float u_intensity;
+
+                    varying vec2 vUv;
+
+                    // Organic Noise for Swirling
+                    vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+                    vec2 mod289(vec2 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+                    vec3 permute(vec3 x) { return mod289(((x*34.0)+1.0)*x); }
+                    float snoise(vec2 v) {
+                        const vec4 C = vec4(0.211324865405187, 0.366025403784439, -0.577350269189626, 0.024390243902439);
+                        vec2 i  = floor(v + dot(v, C.yy) );
+                        vec2 x0 = v -   i + dot(i, C.xx);
+                        vec2 i1 = (x0.x > x0.y) ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
+                        vec4 x12 = x0.xyxy + C.xxzz;
+                        x12.xy -= i1;
+                        i = mod289(i);
+                        vec3 p = permute( permute( i.y + vec3(0.0, i1.y, 1.0 )) + i.x + vec3(0.0, i1.x, 1.0 ));
+                        vec3 m = max(0.5 - vec3(dot(x0,x0), dot(x12.xy,x12.xy), dot(x12.zw,x12.zw)), 0.0);
+                        m = m*m ; m = m*m ;
+                        vec3 x = 2.0 * fract(p * C.www) - 1.0;
+                        vec3 h = abs(x) - 0.5;
+                        vec3 ox = floor(x + 0.5);
+                        vec3 a0 = x - ox;
+                        m *= 1.79284291400159 - 0.85373472095314 * ( a0*a0 + h*h );
+                        vec3 g;
+                        g.x  = a0.x  * x0.x  + h.x  * x0.y;
+                        g.yz = a0.yz * x12.xz + h.yz * x12.yw;
+                        return 130.0 * dot(m, g);
+                    }
+
+                    void main() {
+                        vec2 uv = vUv;
+                        
+                        // 1. Calculate swirling flow field based on noise and time
+                        float n1 = snoise(uv * 3.0 + u_time * 0.2);
+                        float n2 = snoise(uv * 3.0 - u_time * 0.2 + 10.0);
+                        vec2 flowDirection = vec2(n1, n2) * (u_swirl * 0.005);
+                        
+                        // 2. Fetch Motion Input (Mirroring the UV so it acts like a mirror)
+                        vec2 mirrorUv = vec2(1.0 - uv.x, uv.y);
+                        vec4 motionData = texture2D(u_motion, mirrorUv);
+                        float motionStrength = motionData.r;
+
+                        // 3. Advection: Look "backward" in the flow to pull previous colors forward
+                        // We distort the UVs using the flow direction AND the motion
+                        vec2 distortedUv = uv - flowDirection + (motionData.xy - 0.5) * 0.01;
+                        vec4 prevColor = texture2D(u_buffer, distortedUv);
+                        
+                        // 4. Inject new Dye where motion is detected
+                        // Mix between color1 and color2 based on UV to create depth
+                        vec3 injectedColor = mix(u_color1, u_color2, uv.x + sin(u_time));
+                        vec4 newDye = vec4(injectedColor * motionStrength * u_intensity, 1.0);
+
+                        // 5. Combine and Dissipate
+                        vec4 finalColor = prevColor * u_dissipation + newDye;
+                        
+                        gl_FragColor = finalColor;
+                    }
+                `
+            });
+
+            // --- FINAL DISPLAY SHADER ---
+            displayMaterial = new THREE.ShaderMaterial({
+                uniforms: { 
+                    u_texture: { value: null },
+                    u_bgBrightness: { value: settings.bgBrightness }
+                },
+                vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position, 1.0); }`,
+                fragmentShader: `
+                    uniform sampler2D u_texture;
+                    uniform float u_bgBrightness;
+                    varying vec2 vUv;
+                    void main() {
+                        vec4 fluidColor = texture2D(u_texture, vUv);
+                        // Add a very subtle ambient background glow
+                        vec3 bgColor = vec3(0.05, 0.06, 0.08) * u_bgBrightness;
+                        gl_FragColor = vec4(fluidColor.rgb + bgColor, 1.0);
+                    }
+                `
+            });
+
+            const plane = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), simulationMaterial);
+            scene.add(plane);
+
+            updateMotionHeatmap();
+            animate();
+        }
+
+        // --- MOTION CAPTURE FOR FLUID INJECTION ---
+        function updateMotionHeatmap() {
+            // Fade the old motion out smoothly
+            mCtx.fillStyle = 'rgba(0, 0, 0, 0.15)';
+            mCtx.fillRect(0, 0, 128, 96);
+
+            mCtx.drawImage(video, 0, 0, 128, 96);
+            const curr = mCtx.getImageData(0, 0, 128, 96);
+
+            if (lastFrame) {
+                mCtx.fillStyle = 'white';
+                for (let i = 0; i < curr.data.length; i += 4) {
+                    if (Math.abs(curr.data[i] - lastFrame.data[i]) > settings.motionSensitivity) {
+                        const x = (i / 4) % 128;
+                        const y = Math.floor((i / 4) / 128);
+                        
+                        // Draw a soft glowing blob to act as the "dye injector"
+                        mCtx.beginPath();
+                        const gradient = mCtx.createRadialGradient(x, y, 0, x, y, 4);
+                        gradient.addColorStop(0, 'rgba(255,255,255, 0.8)');
+                        gradient.addColorStop(1, 'rgba(255,255,255, 0)');
+                        mCtx.fillStyle = gradient;
+                        mCtx.arc(x, y, 4, 0, Math.PI * 2);
+                        mCtx.fill();
+                    }
+                }
+            }
+            lastFrame = curr;
+            motionTexture.needsUpdate = true;
+            requestAnimationFrame(updateMotionHeatmap);
+        }
+
+        // --- MAIN RENDER LOOP (Ping-Pong Feedback) ---
+        function animate() {
+            requestAnimationFrame(animate);
+            frameCount++;
+
+            // Update GUI settings in real-time
+            simulationMaterial.uniforms.u_time.value = frameCount * 0.05;
+            simulationMaterial.uniforms.u_dissipation.value = settings.dissipation;
+            simulationMaterial.uniforms.u_swirl.value = settings.swirlStrength;
+            simulationMaterial.uniforms.u_intensity.value = settings.colorIntensity;
+            simulationMaterial.uniforms.u_color1.value.set(settings.color1);
+            simulationMaterial.uniforms.u_color2.value.set(settings.color2);
+            displayMaterial.uniforms.u_bgBrightness.value = settings.bgBrightness;
+
+            // Ping-Pong Rendering
+            // 1. Render the simulation step into rtB (using rtA as previous frame)
+            simulationMaterial.uniforms.u_buffer.value = rtA.texture;
+            scene.overrideMaterial = simulationMaterial;
+            renderer.setRenderTarget(rtB);
+            renderer.render(scene, camera);
+
+            // 2. Swap the buffers
+            let temp = rtA;
+            rtA = rtB;
+            rtB = temp;
+
+            // 3. Render the result (rtA) to the actual screen
+            displayMaterial.uniforms.u_texture.value = rtA.texture;
+            scene.overrideMaterial = displayMaterial;
+            renderer.setRenderTarget(null); // Render to canvas
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            if (renderer) {
+                renderer.setSize(window.innerWidth, window.innerHeight);
+                // Also resize the render targets to keep resolution crisp
+                rtA.setSize(window.innerWidth, window.innerHeight);
+                rtB.setSize(window.innerWidth, window.innerHeight);
+            }
+        }
